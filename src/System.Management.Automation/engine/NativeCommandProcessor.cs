@@ -800,11 +800,50 @@ namespace System.Management.Automation
                         _nativeProcess = new Process() { StartInfo = startInfo };
                         _nativeProcess.Start();
                     }
-                    catch (Win32Exception)
+                    catch (Win32Exception ex)
                     {
 #if UNIX
-                        // On Unix platforms, nothing can be further done, so just throw.
-                        throw;
+                        // On Unix platforms, when direct execution fails (e.g., ENOEXEC for
+                        // polyglot executables like Cosmopolitan APE binaries), try running
+                        // through /bin/sh as a fallback. This matches bash behavior where
+                        // files that fail execve() are executed as shell scripts.
+                        // Only attempt fallback for ENOEXEC (errno 8, consistent across
+                        // Linux, macOS, and BSD).
+                        const int ENOEXEC = 8;
+                        if (ex.NativeErrorCode == ENOEXEC)
+                        {
+                            try
+                            {
+                                // Run through /bin/sh, passing the original executable as argument
+                                string oldFileName = startInfo.FileName;
+                                startInfo.FileName = "/bin/sh";
+
+                                // Handle both ArgumentList (modern) and Arguments (legacy) modes.
+                                // Legacy mode uses Arguments string; modern mode uses ArgumentList.
+                                if (!string.IsNullOrEmpty(startInfo.Arguments))
+                                {
+                                    // Legacy mode: prepend the original filename to Arguments
+                                    startInfo.Arguments = oldFileName + " " + startInfo.Arguments;
+                                }
+                                else
+                                {
+                                    // Modern mode: insert the original filename at the beginning of ArgumentList
+                                    startInfo.ArgumentList.Insert(0, oldFileName);
+                                }
+
+                                _nativeProcess = new Process() { StartInfo = startInfo };
+                                _nativeProcess.Start();
+                            }
+                            catch (Win32Exception)
+                            {
+                                // If /bin/sh fallback also fails, throw the original exception
+                                throw ex;
+                            }
+                        }
+                        else
+                        {
+                            throw;
+                        }
 #else
                         // On headless Windows SKUs, there is no shell to fall back to, so just throw
                         if (!Platform.IsWindowsDesktop)
