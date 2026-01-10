@@ -402,3 +402,103 @@ Describe "Native application invocation and getting cursor position" -Tags 'CI' 
         $result.IndexOf("`e[6n") | Should -Be -1 -Because $result.replace("`e","``e").replace("`u{7}","<BELL>")
     }
 }
+
+Describe "Cosmopolitan APE binary execution" -Tags 'CI' {
+    BeforeAll {
+        $script:cosmoTestBinary = $null
+        $script:supportedEnvironment = -not $IsWindows
+
+        if ($script:supportedEnvironment) {
+            # Create a minimal Cosmopolitan APE binary for testing
+            # APE binaries start with a special header that makes them polyglot executables
+            # They work as both shell scripts and native executables
+            $script:cosmoTestBinary = Join-Path -Path $TestDrive -ChildPath "test-cosmo.com"
+
+            # Download a small Cosmopolitan binary (dash shell) for testing
+            # This is a well-known, stable binary from the Cosmopolitan project
+            try {
+                $webClient = [System.Net.WebClient]::new()
+                $webClient.DownloadFile("https://cosmo.zip/pub/cosmos/bin/dash", $script:cosmoTestBinary)
+                chmod +x $script:cosmoTestBinary
+            }
+            catch {
+                # If download fails, we'll skip the test
+                $script:supportedEnvironment = $false
+                $script:downloadError = $_.Exception.Message
+            }
+        }
+    }
+
+    AfterAll {
+        if ($script:cosmoTestBinary -and (Test-Path -Path $script:cosmoTestBinary)) {
+            Remove-Item -Path $script:cosmoTestBinary -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "Should execute Cosmopolitan APE binaries via /bin/sh fallback" -Skip:(-not $script:supportedEnvironment) {
+        if (-not $script:supportedEnvironment -and $script:downloadError) {
+            Set-ItResult -Pending -Because "Failed to download test binary: $($script:downloadError)"
+            return
+        }
+
+        # Verify the binary exists and is executable
+        Test-Path -Path $script:cosmoTestBinary | Should -BeTrue
+
+        # Run the Cosmopolitan binary with a simple command
+        # dash -c 'echo hello' should output 'hello'
+        $result = & $script:cosmoTestBinary -c 'echo hello'
+        $result | Should -BeExactly 'hello'
+        $LASTEXITCODE | Should -Be 0
+    }
+
+    It "Should pass arguments correctly to Cosmopolitan APE binaries" -Skip:(-not $script:supportedEnvironment) {
+        if (-not $script:supportedEnvironment -and $script:downloadError) {
+            Set-ItResult -Pending -Because "Failed to download test binary: $($script:downloadError)"
+            return
+        }
+
+        # Test that arguments are passed correctly through the /bin/sh fallback
+        $result = & $script:cosmoTestBinary -c 'echo "arg1=$1 arg2=$2"' -- 'first' 'second'
+        $result | Should -Match 'arg1=first'
+        $result | Should -Match 'arg2=second'
+    }
+
+    It "Should handle Cosmopolitan APE binary exit codes correctly" -Skip:(-not $script:supportedEnvironment) {
+        if (-not $script:supportedEnvironment -and $script:downloadError) {
+            Set-ItResult -Pending -Because "Failed to download test binary: $($script:downloadError)"
+            return
+        }
+
+        # Test that exit codes are propagated correctly
+        & $script:cosmoTestBinary -c 'exit 0'
+        $LASTEXITCODE | Should -Be 0
+
+        & $script:cosmoTestBinary -c 'exit 42'
+        $LASTEXITCODE | Should -Be 42
+    }
+
+    It "Should capture stdout from Cosmopolitan APE binaries" -Skip:(-not $script:supportedEnvironment) {
+        if (-not $script:supportedEnvironment -and $script:downloadError) {
+            Set-ItResult -Pending -Because "Failed to download test binary: $($script:downloadError)"
+            return
+        }
+
+        # Test stdout capture
+        $output = & $script:cosmoTestBinary -c 'echo line1; echo line2; echo line3'
+        $output.Count | Should -Be 3
+        $output[0] | Should -BeExactly 'line1'
+        $output[1] | Should -BeExactly 'line2'
+        $output[2] | Should -BeExactly 'line3'
+    }
+
+    It "Should capture stderr from Cosmopolitan APE binaries" -Skip:(-not $script:supportedEnvironment) {
+        if (-not $script:supportedEnvironment -and $script:downloadError) {
+            Set-ItResult -Pending -Because "Failed to download test binary: $($script:downloadError)"
+            return
+        }
+
+        # Test stderr capture
+        $output = & $script:cosmoTestBinary -c 'echo error >&2' 2>&1
+        $output | Should -Match 'error'
+    }
+}
